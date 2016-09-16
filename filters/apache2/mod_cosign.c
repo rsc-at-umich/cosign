@@ -246,22 +246,22 @@ cosign_handler( request_rec *r )
     cfg = (cosign_host_config *)ap_get_module_config( r->server->module_config,
 						      &cosign_module );
     if ( !cfg->configured ) {
-	cosign_log( APLOG_ERR, r->server, "mod_cosign not configured" );
+	cosign_log_req( APLOG_ERR, r, "mod_cosign not configured" );
 	return( cosign_http_status( cfg, HTTP_COSIGN_NOT_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
     if ( cfg->validref == NULL ) {
-	cosign_log( APLOG_ERR, r->server,
+	cosign_log_req( APLOG_ERR, r,
 			"mod_cosign: CosignValidReference not set." );
 	return( cosign_http_status( cfg, HTTP_COSIGN_BAD_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
     if ( cfg->referr == NULL ) {
-	cosign_log( APLOG_ERR, r->server,
+      cosign_log_req( APLOG_ERR, r,
 			"mod_cosign: CosignValidationErrorRedirect not set." );
 	return( cosign_http_status( cfg, HTTP_COSIGN_BAD_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
 
     if (( qstr = r->args ) == NULL ) {
-	cosign_log( APLOG_NOTICE, r->server,
+      cosign_log_req( APLOG_NOTICE, r,
 			"mod_cosign: no query string passed to handler." ); 
 	return( cosign_http_status (cfg, HTTP_COSIGN_CLIENT, HTTP_FORBIDDEN ) );
     }
@@ -270,7 +270,7 @@ cosign_handler( request_rec *r )
     pair = ap_getword( r->pool, &qstr, '&' );
     if ( strncasecmp( pair, "cosign-", strlen( "cosign-" )) != 0 ) {
 	( void )strtok((char *)pair, "=" );
-	cosign_log( APLOG_NOTICE, r->server,
+	cosign_log_req( APLOG_NOTICE, r,
 			"mod_cosign: invalid service \"%s\"", pair );
 	goto validation_failed;
     }
@@ -282,7 +282,7 @@ cosign_handler( request_rec *r )
      * of the query string is assumed to be the destination URL.
      */
     if (( dest = qstr ) == NULL ) {
-	cosign_log( APLOG_NOTICE, r->server,
+      cosign_log_req( APLOG_NOTICE, r,
 			"mod_cosign: no destination URL in query string" );
 
 	goto validation_failed;
@@ -290,24 +290,24 @@ cosign_handler( request_rec *r )
     if (( rc = ap_regexec( cfg->validpreg, dest, 1, matches, 0 )) != 0 ) {
 	if ( rc != AP_REG_NOMATCH ) {
 	    ap_regerror( rc, cfg->validpreg, error, sizeof( error ));
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 			"mod_cosign: ap_regexec %s: %s", dest, error );
 	    return( HTTP_INTERNAL_SERVER_ERROR );
 	}
 	
-	cosign_log( APLOG_NOTICE, r->server,
+	cosign_log_req( APLOG_NOTICE, r,
 			"mod_cosign: invalid destination: %s", dest );
 	goto validation_failed;
     }
     if ( matches[ 0 ].rm_so != 0 || matches[ 0 ].rm_eo != strlen( dest )) {
-	cosign_log( APLOG_NOTICE, r->server, "mod_cosign: "
+	cosign_log_req( APLOG_NOTICE, r, "mod_cosign: "
 		    "invalid destination: %s (partial match)", dest );
 	goto validation_failed;
     }
 
     /* validate service cookie */
     if ( !validchars( cookie )) {
-	cosign_log( APLOG_NOTICE, r->server,
+	cosign_log_req( APLOG_NOTICE, r,
 			"mod_cosign: cookie contains invalid characters" );
 	goto validation_failed;
     }
@@ -322,12 +322,12 @@ cosign_handler( request_rec *r )
      */
     if (( status = apr_uri_parse( r->pool, dest, &uri )) != APR_SUCCESS ) {
 	apr_strerror( status, error, sizeof( error ));
-	cosign_log( APLOG_ERR, r->server,
+	cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: apr_uri_parse '%s': %s", dest, error );
 	return( HTTP_INTERNAL_SERVER_ERROR );
     }
     if ( uri.scheme == NULL || uri.hostname == NULL ) {
-	cosign_log( APLOG_ERR, r->server,
+	cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: bad destination URL: %s", dest );
 	return( HTTP_BAD_REQUEST );
     }
@@ -339,7 +339,7 @@ cosign_handler( request_rec *r )
     if ( strcasecmp( hostname, uri.hostname ) != 0 ||
 		( port != uri.port && cfg->noappendport != 1 )) {
 	if ( cfg->validredir != 1 ) {
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 			"mod_cosign: current hostname \"%s\" does not match "
 			"service URL hostname \"%s\", cannot set cookie for "
 			"correct domain.", hostname, uri.hostname );
@@ -387,7 +387,7 @@ cosign_handler( request_rec *r )
 	int    delay = right_now - start;
 
 	if (( delay < 0 ) || ( delay >= cfg->warnvalidatedelay )) {
-	    cosign_log( APLOG_ERR, r->server, 
+	    cosign_log_req( APLOG_ERR, r, 
 			"mod_cosign: cosign_handler() - Cookie validation took %d seconds (> %d)",
 			delay, cfg->warnvalidatedelay);
 	}
@@ -514,22 +514,22 @@ cosign_auth( request_rec *r )
 
     if (( cfg->host == NULL ) || ( cfg->redirect == NULL ) ||
 		( cfg->service == NULL || cfg->posterror == NULL )) {
-	cosign_log( APLOG_ERR, r->server,
+	cosign_log_req( APLOG_ERR, r,
 		"mod_cosign: Cosign is not configured correctly:" );
 	if ( cfg->host == NULL ) {
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: CosignHostname not set." );
 	}
 	if ( cfg->redirect == NULL ) {
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: CosignRedirect not set." );
 	}
 	if ( cfg->service == NULL ) {
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: CosignService not set." );
 	}
 	if ( cfg->posterror == NULL ) {
-	    cosign_log( APLOG_ERR, r->server,
+	    cosign_log_req( APLOG_ERR, r,
 		    "mod_cosign: CosignPostErrorRedirect not set." );
 	}
 	return( HTTP_SERVICE_UNAVAILABLE );
@@ -586,7 +586,7 @@ cosign_auth( request_rec *r )
 	int    delay = right_now - start;
 
 	if ( ( delay < 0 ) || ( delay >= cfg->warnvalidatedelay )) {
-	    cosign_log( APLOG_ERR, r->server, 
+	    cosign_log_req( APLOG_ERR, r, 
 			"mod_cosign: cosign_auth() - Cookie validation took %d seconds (> %d)",
 			delay, cfg->warnvalidatedelay);
 	}
@@ -611,8 +611,8 @@ cosign_auth( request_rec *r )
 	if ( cfg->gss == 1 ) {
 	    if ( gss_krb5_ccache_name( &minor_status, si.si_krb5tkt, NULL )
 		    != GSS_S_COMPLETE ) {
-		cosign_log( APLOG_ERR,
-			 r->server, "mod_cosign: gss_krb5_ccache_name" );
+	      cosign_log_req( APLOG_ERR, r,
+			 "mod_cosign: gss_krb5_ccache_name" );
 	    }
 	}
 #endif /* GSS */
@@ -647,7 +647,7 @@ redirect:
 
     if ( cosign_redirect( r, cfg ) != 0 ) {
         /* This should be IMPOSSIBLE */
-        cosign_log( APLOG_ERR, r->server, "cosign_auth(): cosign_redirect() FAILED");
+        cosign_log_req( APLOG_ERR, r, "cosign_auth(): cosign_redirect() FAILED");
 
         return( cosign_http_status( cfg, HTTP_COSIGN_INTERNAL_ERROR, HTTP_SERVICE_UNAVAILABLE ));
     }
