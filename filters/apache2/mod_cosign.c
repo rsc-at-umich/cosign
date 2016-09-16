@@ -1,5 +1,10 @@
 /*
- *  mod_cosign.c -- Apache sample cosign module
+ * filters/apache2/mod_cosign.c
+ *
+ * Copyright (c) 2002-2016 by the Regents of the University of Michigan
+ * All Rights Reserved.
+ *
+ * See LICENSE
  */ 
 
 #include "config.h"
@@ -41,9 +46,27 @@
 #include "log.h"
 
 static int	cosign_redirect( request_rec *, cosign_host_config * );
+static int      cosign_http_status (cosign_host_config *s, int status, int def);
 
 /* Our exported link to Apache. */
 module AP_MODULE_DECLARE_DATA cosign_module;
+
+/*
+ * This function is intended to allow whether extended cosign http status
+ * codes are implemented.
+ */
+    static int
+    cosign_http_status (cosign_host_config *cfg, int status, int def)
+{
+    if (cfg == (cosign_host_config *) NULL)
+      return( def );
+
+    if( cfg->extendedhttpstatus != 1)
+      return( def );
+
+    return( status );
+} /* end of int cosign_http_status() */
+
 
     static void *
 cosign_create_config( apr_pool_t *p )
@@ -82,6 +105,8 @@ cosign_create_config( apr_pool_t *p )
     cfg->proxy = -1;
     cfg->expiretime = 86400; /* 24 hours */
     cfg->httponly_cookies = 0;
+    cfg->extendedhttpstatus = -1; /* Not set. */
+    cfg->warnvalidatedelay = -1;  /* Not set. */
 #ifdef KRB
     cfg->krbtkt = -1;
 #ifdef GSS
@@ -128,7 +153,7 @@ cosign_redirect( request_rec *r, cosign_host_config *cfg )
     char                *ref, *reqfact;
     int                 i;
     unsigned int	port;
-    struct timeval      now;
+    /* struct timeval      now; */ /*xxx: unused, rsc - 2016/09/14 */
 
     /* if they've posted, let them know they are out of luck */
     if ( r->method_number == M_POST ) {
@@ -209,6 +234,7 @@ cosign_handler( request_rec *r )
     int			rc, cv;
     struct sinfo	si;
     struct timeval	now;
+    time_t		start;
 
     if ( !r->handler || strcmp( r->handler, "cosign" ) != 0 ) {
 	return( DECLINED );
@@ -221,23 +247,23 @@ cosign_handler( request_rec *r )
 						      &cosign_module );
     if ( !cfg->configured ) {
 	cosign_log( APLOG_ERR, r->server, "mod_cosign not configured" );
-	return( HTTP_SERVICE_UNAVAILABLE );
+	return( cosign_http_status( cfg, HTTP_COSIGN_NOT_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
     if ( cfg->validref == NULL ) {
 	cosign_log( APLOG_ERR, r->server,
 			"mod_cosign: CosignValidReference not set." );
-	return( HTTP_SERVICE_UNAVAILABLE );
+	return( cosign_http_status( cfg, HTTP_COSIGN_BAD_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
     if ( cfg->referr == NULL ) {
 	cosign_log( APLOG_ERR, r->server,
 			"mod_cosign: CosignValidationErrorRedirect not set." );
-	return( HTTP_SERVICE_UNAVAILABLE );
+	return( cosign_http_status( cfg, HTTP_COSIGN_BAD_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
     }
 
     if (( qstr = r->args ) == NULL ) {
 	cosign_log( APLOG_NOTICE, r->server,
 			"mod_cosign: no query string passed to handler." ); 
-	return( HTTP_FORBIDDEN );
+	return( cosign_http_status (cfg, HTTP_COSIGN_CLIENT, HTTP_FORBIDDEN ) );
     }
 
     /* get cookie from query string */
@@ -297,7 +323,7 @@ cosign_handler( request_rec *r )
     if (( status = apr_uri_parse( r->pool, dest, &uri )) != APR_SUCCESS ) {
 	apr_strerror( status, error, sizeof( error ));
 	cosign_log( APLOG_ERR, r->server,
-		    "mod_cosign: apr_uri_parse %s: %s", dest, error );
+		    "mod_cosign: apr_uri_parse '%s': %s", dest, error );
 	return( HTTP_INTERNAL_SERVER_ERROR );
     }
     if ( uri.scheme == NULL || uri.hostname == NULL ) {
@@ -312,31 +338,38 @@ cosign_handler( request_rec *r )
     port = ap_get_server_port( r );
     if ( strcasecmp( hostname, uri.hostname ) != 0 ||
 		( port != uri.port && cfg->noappendport != 1 )) {
-	if ( cfg->validredir == 1 ) {
-	    /* always redirect to https unless CosignHttpOnly is enabled. */
-	    if ( cfg->http == 1 ) {
-		scheme = "http";
-	    } else {
-		scheme = "https";
-	    }
-	    if ( port != uri.port ) {
-		dest = apr_psprintf( r->pool, "%s://%s:%d%s",
-			    scheme, uri.hostname, uri.port, r->unparsed_uri );
-	    } else {
-		dest = apr_psprintf( r->pool, "%s://%s%s",
-			    scheme, uri.hostname, r->unparsed_uri );
-	    }
-	    apr_table_set( r->headers_out, "Location", dest );
-
-	    return( HTTP_MOVED_PERMANENTLY );
-	} else {
+	if ( cfg->validredir != 1 ) {
 	    cosign_log( APLOG_ERR, r->server,
 			"mod_cosign: current hostname \"%s\" does not match "
 			"service URL hostname \"%s\", cannot set cookie for "
 			"correct domain.", hostname, uri.hostname );
-
-	    return( HTTP_SERVICE_UNAVAILABLE );
+	    
+	    return( cosign_http_status (cfg, HTTP_COSIGN_BAD_CONFIG, HTTP_SERVICE_UNAVAILABLE ) );
 	}
+
+
+	/* always redirect to https unless CosignHttpOnly is enabled. */
+	if ( cfg->http == 1 ) {
+	    scheme = "http";
+	} else {
+	    scheme = "https";
+	}
+	if ( port != uri.port ) {
+	    dest = apr_psprintf( r->pool, "%s://%s:%d%s",
+				 scheme, uri.hostname, uri.port, r->unparsed_uri );
+	} else {
+	    dest = apr_psprintf( r->pool, "%s://%s%s",
+				 scheme, uri.hostname, r->unparsed_uri );
+	}
+	apr_table_set( r->headers_out, "Location", dest );
+
+	return( HTTP_MOVED_PERMANENTLY );
+    
+    }
+
+    /* Generate warnings if the cosign process takes too long */
+    if ( cfg->warnvalidatedelay > 0 ) {
+        start = time( NULL );
     }
 
     cv = cosign_cookie_valid( cfg, cookie, &rekey, &si,
@@ -348,6 +381,18 @@ cosign_handler( request_rec *r )
 
 	cookie = rekey;
     }
+
+    if ( cfg->warnvalidatedelay > 0 ) {
+        time_t right_now   = time( NULL );
+	int    delay = right_now - start;
+
+	if (( delay < 0 ) || ( delay >= cfg->warnvalidatedelay )) {
+	    cosign_log( APLOG_ERR, r->server, 
+			"mod_cosign: cosign_handler() - Cookie validation took %d seconds (> %d)",
+			delay, cfg->warnvalidatedelay);
+	}
+    }
+
     switch ( cv ) {
     default:
     case COSIGN_ERROR:
@@ -441,6 +486,7 @@ cosign_auth( request_rec *r )
     char		*my_cookie;
     int			cv;
     int			cookietime = 0;
+    time_t 		start;
     struct sinfo	si;
     cosign_host_config	*cfg;
     struct timeval	now;
@@ -522,6 +568,11 @@ cosign_auth( request_rec *r )
 	goto redirect;
     }
 
+    /* Generate warnings if delay is too much */
+    if ( cfg->warnvalidatedelay > 0 ) {
+        start = time( NULL );
+    }
+
     /*
      * Validate cookie with backside server.  If we already have a cached
      * version of the data, just verify the cookie's still valid.
@@ -529,6 +580,18 @@ cosign_auth( request_rec *r )
      */
     cv = cosign_cookie_valid( cfg, my_cookie, NULL, &si,
 		r->connection->remote_ip, r->server );
+
+    if ( cfg->warnvalidatedelay > 0 ) {
+        time_t right_now   = time( NULL );
+	int    delay = right_now - start;
+
+	if ( ( delay < 0 ) || ( delay >= cfg->warnvalidatedelay )) {
+	    cosign_log( APLOG_ERR, r->server, 
+			"mod_cosign: cosign_auth() - Cookie validation took %d seconds (> %d)",
+			delay, cfg->warnvalidatedelay);
+	}
+    }
+
     if ( cv == COSIGN_ERROR ) {
 	return( HTTP_SERVICE_UNAVAILABLE );	/* it's all forbidden! */
     } 
@@ -571,19 +634,25 @@ redirect:
      * before we return 300.
      */
     if ( cosign_redirect( r, cfg ) != 0 ) {
-        return( HTTP_SERVICE_UNAVAILABLE );
+        /* This should be IMPOSSIBLE */
+
+      return( cosign_http_status (cfg, HTTP_COSIGN_INTERNAL_ERROR, HTTP_SERVICE_UNAVAILABLE ));
+
     }
 #endif /* notdef */
     if ( ap_some_auth_required( r )) {
         apr_table_setn( r->notes, "cosign-redirect", "true" );
         return( DECLINED );
-    } else {
-        if ( cosign_redirect( r, cfg ) != 0 ) {
-            return( HTTP_SERVICE_UNAVAILABLE );
-        }
-        return( HTTP_MOVED_TEMPORARILY );
     }
 
+    if ( cosign_redirect( r, cfg ) != 0 ) {
+        /* This should be IMPOSSIBLE */
+        cosign_log( APLOG_ERR, r->server, "cosign_auth(): cosign_redirect() FAILED");
+
+        return( cosign_http_status( cfg, HTTP_COSIGN_INTERNAL_ERROR, HTTP_SERVICE_UNAVAILABLE ));
+    }
+    return( HTTP_MOVED_TEMPORARILY );
+    
 }
     static cosign_host_config *
 cosign_merge_cfg( cmd_parms *params, void *mconfig )
@@ -661,6 +730,14 @@ cosign_merge_cfg( cmd_parms *params, void *mconfig )
     }
     if ( cfg->noappendport == -1 ) {
 	cfg->noappendport = scfg->noappendport;
+    }
+
+    if ( cfg->extendedhttpstatus == -1 ) {
+	cfg->extendedhttpstatus = scfg->extendedhttpstatus;
+    }
+
+    if ( cfg->warnvalidatedelay == -1 ) {
+	cfg->warnvalidatedelay = scfg->warnvalidatedelay;
     }
 
     cfg->expiretime = scfg->expiretime;
@@ -1203,6 +1280,55 @@ set_cosign_httponly_cookies( cmd_parms *params, void *mconfig, int flag )
     return( NULL );
 }
 
+    static const char *
+set_cosign_extendedhttpstatus( cmd_parms *params, void *mconfig, int flag )
+{
+    cosign_host_config          *cfg;
+
+    cfg = cosign_merge_cfg( params, mconfig );
+
+    cfg->extendedhttpstatus = flag;
+    /* DOES NOT AFFECT THIS! cfg->configured = 1; */
+    return( NULL );
+}
+
+
+    static const char *
+set_cosign_warnvalidatedelay( cmd_parms *params, void *mconfig, const char *arg )
+{
+    cosign_host_config          *cfg;
+    long val;
+
+    cfg = cosign_merge_cfg( params, mconfig );
+
+    if ( strcasecmp( arg, "off" ) == 0)
+      {
+	cfg->warnvalidatedelay = 0;
+      }
+
+    else if ( strcasecmp ( arg, "default" ) == 0)
+      {
+	cfg->warnvalidatedelay = -1;
+      }
+
+    else
+      {
+	errno = 0;
+    
+	val = strtol( arg, (char **)NULL, 10 );
+
+	if ((errno != 0) || (val < -1) || (300 < val))
+	  {
+	    return ("CosignWarnValidateDelay out of range (-1 .. 300) or invalid");
+	  }
+	cfg->warnvalidatedelay = val;
+      }
+
+    /* cfg->configured = 1; */
+    return( NULL );
+}
+
+
 static command_rec cosign_cmds[ ] =
 {
         AP_INIT_TAKE1( "CosignPostErrorRedirect", set_cosign_post_error,
@@ -1306,6 +1432,14 @@ static command_rec cosign_cmds[ ] =
 	AP_INIT_FLAG( "CosignHttpOnlyCookies", set_cosign_httponly_cookies,
 	NULL, RSRC_CONF | OR_AUTHCFG,
 	"enable or disable \"httponly\" flag for Set-Cookie header" ),
+
+        AP_INIT_FLAG( "CosignExtendedHttpStatus", set_cosign_extendedhttpstatus,
+        NULL, RSRC_CONF, 
+        "Produce Cosign specific status codes. [OFF|on]" ),
+
+        AP_INIT_TAKE1( "CosignWarnValidateDelay", set_cosign_warnvalidatedelay,
+        NULL, RSRC_CONF | ACCESS_CONF, 
+        "Generate warning in logfile when cosign cookie validation takes too long. [OFF|default|<seconds>]" ),
 
 #ifdef KRB
         AP_INIT_FLAG( "CosignGetKerberosTickets", set_cosign_tickets,

@@ -1,7 +1,7 @@
 # Process this file with autoconf to produce a configure script.
-AC_INIT(cosign,3.2.0,cosign@umich.edu) 
+AC_INIT(cosign,3.2.0.a,cosign@umich.edu) 
 AC_PREREQ(2.53)
-AC_COPYRIGHT([Copyright (c) 2001-2002 Regents of The University of Michigan.  All Rights Reserved.])
+AC_COPYRIGHT([Copyright (c) 2001-2002, 2016 Regents of The University of Michigan.  All Rights Reserved.])
 AC_CONFIG_SRCDIR([version.c.in])
 AC_CONFIG_HEADER([common/config.h])
 
